@@ -13,7 +13,8 @@ bool is_inverse = false;
 void setup() {
   Wire.begin(8, 9);
   u8g2.begin();
-  u8g2.setContrast(255);
+  u8g2.setContrast(128);          // 撮影用: 縞のコントラストを抑える(255=最大は強調)
+  u8g2.sendF("ca", 0xd5, 0xf0);   // 撮影用: 表示クロック最大化=リフレッシュ上げてカメラの縞(ローリングシャッター)を潰す
 }
 
 void loop() {
