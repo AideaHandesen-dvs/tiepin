@@ -60,6 +60,8 @@
   label.range { display: grid; grid-template-columns: 2.5em 1fr 1.5em; gap: 10px; align-items: center; margin: 6px 0; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   .num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  label.check { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
+  label.check input { width: 18px; height: 18px; accent-color: var(--accent); }
   fieldset { border: 0; padding: 0; margin: 0; }
   fieldset:disabled { opacity: .5; }
   footer { font-size: 12px; color: var(--sub); margin-top: 20px; }
@@ -83,7 +85,7 @@
       <h2>表示</h2>
       <div class="oled" id="preview">DVD</div>
       <div class="modes" role="group" aria-label="表示">
-        <button data-mode="0" aria-pressed="false">DVD</button>
+        <button data-mode="0" aria-pressed="false">跳ねる</button>
         <button data-mode="1" aria-pressed="false">文字</button>
         <button data-mode="2" aria-pressed="false">時計</button>
       </div>
@@ -100,7 +102,15 @@
     </section>
 
     <section class="card">
-      <h2>DVD の速さ</h2>
+      <h2>跳ねる文字（DVD）</h2>
+      <div class="row">
+        <input id="logo" type="text" autocomplete="off" placeholder="DVD">
+        <button id="sendLogo">送る</button>
+      </div>
+      <p class="hint" id="logoBytes">0 / 32 バイト</p>
+      <label class="range">幅<input id="bw" type="range" min="8" max="120" value="32"><span class="num" id="bwv">32</span></label>
+      <label class="check"><input id="bwAuto" type="checkbox"> 幅を文字に合わせる（本体が測る）</label>
+      <p class="hint">幅は壁に当たる判定の幅。文字より狭くすると壁にめり込み、広くすると手前で跳ね返る。角に入る間隔も変わる。</p>
       <label class="range">横<input id="sx" type="range" min="1" max="6" value="2"><span class="num" id="sxv">2</span></label>
       <label class="range">縦<input id="sy" type="range" min="1" max="6" value="1"><span class="num" id="syv">1</span></label>
       <p class="hint" id="corner"></p>
@@ -122,12 +132,15 @@ const MODE  = "7e1a0002-6a3d-4c1b-9e57-71e9e0c0de01"; // 1 バイト：0=DVD 1=�
 const TEXT  = "7e1a0003-6a3d-4c1b-9e57-71e9e0c0de01"; // UTF-8（最大 96 バイト）
 const SPEED = "7e1a0004-6a3d-4c1b-9e57-71e9e0c0de01"; // 2 バイト：dx, dy（1〜6）
 const TIME  = "7e1a0005-6a3d-4c1b-9e57-71e9e0c0de01"; // UNIX 秒（int32 LE）＋ UTC からの分（int32 LE）
-const TEXT_MAX = 96;
+const LOGO  = "7e1a0006-6a3d-4c1b-9e57-71e9e0c0de01"; // 跳ねる文字（UTF-8・最大 32 バイト）
+const BOX   = "7e1a0007-6a3d-4c1b-9e57-71e9e0c0de01"; // 書く：幅（8〜120・0＝文字に合わせる） 読む：設定・実際の幅・高さ
+const TEXT_MAX = 96, LOGO_MAX = 32;
 
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder(), dec = new TextDecoder();
 let device = null, ch = {};
-let current = { mode: 0, text: "tiepin" };
+let current = { mode: 0, text: "tiepin", logo: "DVD" };
+let box = { w: 32, h: 14 }; // 本体が実際に使っている当たり判定の箱（角の計算に使う）
 
 function setState(on, msg) {
   $("dot").classList.toggle("on", on);
@@ -143,22 +156,22 @@ function showErr(e) {
 }
 
 // 本体側は 96 バイトで切る＝字の途中で切れないよう、ページ側で字単位に詰める
-function fitBytes(s) {
+function fitBytes(s, max = TEXT_MAX) {
   let out = "";
   for (const c of s) {
-    if (enc.encode(out + c).length > TEXT_MAX) break;
+    if (enc.encode(out + c).length > max) break;
     out += c;
   }
   return out;
 }
 
 // 本体の drawDvd と同じ動きをなぞって、角に入る間隔を出す（電源を入れた時の位置から）
-function cornerPeriod(sx, sy) {
+function cornerPeriod(sx, sy, w = box.w, h = box.h) {
   let x = 10, y = 31, dx = sx, dy = sy, last = -1;
   for (let f = 0; f < 200000; f++) {
     let hx = false, hy = false;
-    if (x <= 0 || x + 32 >= 128) { dx = -dx; hx = true; }
-    if (y - 14 <= 0 || y >= 64) { dy = -dy; hy = true; }
+    if (x <= 0 || x + w >= 128) { dx = -dx; hx = true; }
+    if (y - h <= 0 || y >= 64) { dy = -dy; hy = true; }
     if (hx && hy) {
       if (last >= 0) return f - last;
       last = f;
@@ -185,7 +198,29 @@ function renderMode() {
   else if (current.mode === 2) {
     const d = new Date();
     pv.textContent = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  } else pv.textContent = "DVD";
+  } else pv.textContent = current.logo || "DVD";
+}
+
+function updateLogoBytes() {
+  const n = enc.encode($("logo").value).length;
+  $("logoBytes").textContent = `${n} / ${LOGO_MAX} バイト` + (n > LOGO_MAX ? "（はみ出た分は送らない）" : "");
+  $("logoBytes").classList.toggle("over", n > LOGO_MAX);
+}
+function renderBox() {
+  const auto = $("bwAuto").checked;
+  $("bw").disabled = auto;
+  $("bw").value = box.w; $("bwv").textContent = box.w;
+  updateCorner();
+}
+// 本体が決め直した箱を読む（書いた直後は本体の loop がまだなので、少し待つ）
+async function readBox() {
+  await new Promise((r) => setTimeout(r, 150));
+  const b = await ch.box.readValue();
+  if (b.byteLength >= 3) {
+    $("bwAuto").checked = b.getUint8(0) === 0;
+    box = { w: b.getUint8(1), h: b.getUint8(2) };
+  }
+  renderBox();
 }
 
 function updateBytes() {
@@ -223,6 +258,8 @@ async function connect(all = false) {
       text: await svc.getCharacteristic(TEXT),
       speed: await svc.getCharacteristic(SPEED),
       time: await svc.getCharacteristic(TIME),
+      logo: await svc.getCharacteristic(LOGO),
+      box: await svc.getCharacteristic(BOX),
     };
     // 今の設定を読んでページに映す
     current.mode = (await ch.mode.readValue()).getUint8(0);
@@ -230,6 +267,10 @@ async function connect(all = false) {
     const sp = await ch.speed.readValue();
     $("sx").value = sp.getUint8(0); $("sy").value = sp.getUint8(1);
     $("text").value = current.text;
+    current.logo = dec.decode(await ch.logo.readValue());
+    $("logo").value = current.logo;
+    updateLogoBytes();
+    await readBox();
     await sendTime();
     updateBytes(); updateCorner(); renderMode();
     setState(true, `つながった（${device.name || "tiepin"}）`);
@@ -283,8 +324,36 @@ let speedTimer;
     write(() => ch.speed.writeValueWithResponse(Uint8Array.of(+$("sx").value, +$("sy").value))), 150);
 }));
 $("sendTime").addEventListener("click", () => write(sendTime));
+$("logo").addEventListener("input", updateLogoBytes);
+function sendLogo() {
+  const t = fitBytes($("logo").value, LOGO_MAX);
+  if (!t) return;
+  $("logo").value = t; updateLogoBytes();
+  current.logo = t;
+  current.mode = 0; renderMode(); // 跳ねる文字を送ったら DVD の表示に切り替える
+  write(async () => {
+    await ch.logo.writeValueWithResponse(enc.encode(t));
+    await ch.mode.writeValueWithResponse(Uint8Array.of(0));
+    await readBox(); // 文字に合わせる設定なら幅が変わる
+  });
+}
+$("sendLogo").addEventListener("click", sendLogo);
+$("logo").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) sendLogo(); });
+let boxTimer;
+function sendBox() {
+  clearTimeout(boxTimer);
+  boxTimer = setTimeout(() => write(async () => {
+    await ch.box.writeValueWithResponse(Uint8Array.of($("bwAuto").checked ? 0 : +$("bw").value));
+    await readBox();
+  }), 150);
+}
+$("bw").addEventListener("input", () => {
+  box.w = +$("bw").value; $("bwv").textContent = box.w; updateCorner(); // 先にページ側で映す
+  sendBox();
+});
+$("bwAuto").addEventListener("change", () => { $("bw").disabled = $("bwAuto").checked; sendBox(); });
 
-updateBytes(); updateCorner(); renderMode();
+updateBytes(); updateLogoBytes(); updateCorner(); renderMode();
 setInterval(() => { if (current.mode === 2) renderMode(); }, 10000);
 </script>
 </body>
