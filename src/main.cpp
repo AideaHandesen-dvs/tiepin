@@ -17,8 +17,7 @@ U8G2_SH1107_64X128_F_HW_I2C u8g2(U8G2_R1, /* reset=*/ U8X8_PIN_NONE);
 #define TIME_UUID  "7e1a0005-6a3d-4c1b-9e57-71e9e0c0de01"  // 8 バイト：UNIX 秒（int32 LE）＋ UTC からの分（int32 LE）
 #define LOGO_UUID  "7e1a0006-6a3d-4c1b-9e57-71e9e0c0de01"  // 跳ねる文字（UTF-8・最大 32 バイト）
 #define BOX_UUID   "7e1a0007-6a3d-4c1b-9e57-71e9e0c0de01"  // 書く 1 バイト：当たり判定の幅（8〜120・0＝文字に合わせる）
-                                                            // 読む 4 バイト：幅の設定・実際の幅・実際の高さ・跳ねるもの（0=文字 1=絵）
-#define SPR_UUID   "7e1a0008-6a3d-4c1b-9e57-71e9e0c0de01"  // 跳ねる絵：幅・高さ（8〜64 × 8〜32）＋ XBM（1 行 ceil(幅/8) バイト・左の点が下位ビット）
+                                                            // 読む 3 バイト：幅の設定・実際の幅・実際の高さ
 
 enum Mode : uint8_t { MODE_DVD = 0, MODE_TEXT = 1, MODE_CLOCK = 2, MODE_COUNT };
 
@@ -33,9 +32,6 @@ char pending_text[97];
 volatile bool text_pending = false;
 char pending_logo[33];
 volatile bool logo_pending = false;
-const size_t SPR_MAX = 2 + 8 * 32;  // 64×32 の絵
-uint8_t pending_spr[SPR_MAX];
-volatile bool spr_pending = false;
 bool time_set = false;
 int32_t tz_min = 9 * 60;
 
@@ -46,8 +42,6 @@ String logo = "DVD";
 uint8_t box_w = 32;    // 当たり判定の幅の設定（0＝文字に合わせる）。32 は "DVD" に合わせて目で決めた幅
 int logo_w = 32;       // 実際に使う幅
 int logo_h = 14;       // 実際に使う高さ（フォントで決まる）
-bool use_sprite = false;  // 跳ねるのは文字か絵か（最後に送られた方）
-uint8_t spr[SPR_MAX] = { 0 };  // 跳ねる絵（先頭 2 バイトが幅・高さ）
 bool is_inverse = false;
 
 // 文字
@@ -58,12 +52,7 @@ void applySpeed() {
   dy = (dy < 0 ? -1 : 1) * speed_y;
 }
 
-BLECharacteristic *ch_mode, *ch_text, *ch_speed, *ch_time, *ch_logo, *ch_box, *ch_spr;
-
-size_t sprBytes(uint8_t w, uint8_t h) { return 2 + (w + 7) / 8 * h; }
-bool sprValid(const uint8_t *b, size_t len) {
-  return len >= 2 && b[0] >= 8 && b[0] <= 64 && b[1] >= 8 && b[1] <= 32 && len >= sprBytes(b[0], b[1]);
-}
+BLECharacteristic *ch_mode, *ch_text, *ch_speed, *ch_time, *ch_logo, *ch_box;
 
 bool isAscii(const String &s) {
   for (size_t i = 0; i < s.length(); i++) if ((uint8_t)s[i] >= 0x80) return false;
@@ -77,19 +66,13 @@ void setLogoFont() {
 
 // 跳ねる文字か幅が変わったら、当たり判定の箱を決め直す（loop の中で呼ぶ＝u8g2 を触るので）
 void applyBox() {
-  if (use_sprite) {  // 絵は絵の大きさがそのまま箱
-    logo_w = spr[0];
-    logo_h = spr[1];
-  } else {
-    setLogoFont();
-    logo_h = isAscii(logo) ? 14 : 16;
-    logo_w = box_w ? box_w : u8g2.getUTF8Width(logo.c_str()) + 1;
-    logo_w = constrain(logo_w, 8, 120);
-  }
+  setLogoFont();
+  logo_h = isAscii(logo) ? 14 : 16;
+  logo_w = box_w ? box_w : u8g2.getUTF8Width(logo.c_str()) + 1;
+  logo_w = constrain(logo_w, 8, 120);
   x = constrain(x, 1, 127 - logo_w);  // 箱が広がって壁にめり込んだら内へ戻す（めり込んだままだと毎コマ跳ね返る）
-  y = constrain(y, logo_h + 1, 63);
-  uint8_t b[4] = { box_w, (uint8_t)logo_w, (uint8_t)logo_h, (uint8_t)use_sprite };
-  if (ch_box) ch_box->setValue(b, 4);
+  uint8_t b[3] = { box_w, (uint8_t)logo_w, (uint8_t)logo_h };
+  if (ch_box) ch_box->setValue(b, 3);
 }
 
 class Writes : public BLECharacteristicCallbacks {
@@ -111,11 +94,6 @@ class Writes : public BLECharacteristicCallbacks {
       memcpy(pending_logo, v, n);
       pending_logo[n] = 0;
       logo_pending = true;
-      portEXIT_CRITICAL(&text_mux);
-    } else if (c == ch_spr && sprValid(v, len)) {
-      portENTER_CRITICAL(&text_mux);
-      memcpy(pending_spr, v, sprBytes(v[0], v[1]));
-      spr_pending = true;
       portEXIT_CRITICAL(&text_mux);
     } else if (c == ch_box && len >= 1) {
       box_w = v[0] ? constrain(v[0], 8, 120) : 0;
@@ -159,8 +137,7 @@ void setupBle() {
   ch_time  = svc->createCharacteristic(TIME_UUID, BLECharacteristic::PROPERTY_WRITE);
   ch_logo  = svc->createCharacteristic(LOGO_UUID, RW);
   ch_box   = svc->createCharacteristic(BOX_UUID, RW);
-  ch_spr   = svc->createCharacteristic(SPR_UUID, RW);
-  for (BLECharacteristic *c : { ch_mode, ch_text, ch_speed, ch_time, ch_logo, ch_box, ch_spr }) c->setCallbacks(&cb);
+  for (BLECharacteristic *c : { ch_mode, ch_text, ch_speed, ch_time, ch_logo, ch_box }) c->setCallbacks(&cb);
   // 今の値を読めるようにしておく（ページが開いた時に今の設定を表示する）
   uint8_t m = mode;
   ch_mode->setValue(&m, 1);
@@ -168,7 +145,6 @@ void setupBle() {
   uint8_t sp[2] = { (uint8_t)speed_x, (uint8_t)speed_y };
   ch_speed->setValue(sp, 2);
   ch_logo->setValue(logo);
-  if (sprValid(spr, SPR_MAX)) ch_spr->setValue(spr, sprBytes(spr[0], spr[1]));
   applyBox();
   svc->start();
   BLEAdvertising *adv = BLEDevice::getAdvertising();
@@ -202,19 +178,14 @@ void drawDvd() {
   y += dy;
 
   setLogoFont();
-  // y は文字の下端（ベースライン）＝絵は y から高さ分上に描く
-  auto drawLogo = [] {
-    if (use_sprite) u8g2.drawXBM(x, y - logo_h, spr[0], spr[1], spr + 2);
-    else u8g2.drawUTF8(x, y, logo.c_str());
-  };
 
   if (is_inverse) {
       u8g2.drawBox(0, 0, 128, 64);
       u8g2.setDrawColor(0); // 反転時は黒で文字を書く
-      drawLogo();
+      u8g2.drawUTF8(x, y, logo.c_str());
       u8g2.setDrawColor(1); // 色を戻す
   } else {
-      drawLogo();
+      u8g2.drawUTF8(x, y, logo.c_str());
       u8g2.drawFrame(0, 0, 128, 64); // 通常時は枠を表示
   }
 }
@@ -262,8 +233,6 @@ void setup() {
   applySpeed();
   logo = prefs.getString("logo", "DVD");
   box_w = prefs.getUChar("bw", 32);
-  prefs.getBytes("spr", spr, SPR_MAX);
-  use_sprite = prefs.getBool("usespr", false) && sprValid(spr, SPR_MAX);
 
   setupBle();
 }
@@ -286,18 +255,8 @@ void loop() {
     pending_logo[0] = 0;  // 幅だけ変えた時は空のまま＝文字はそのまま
     logo_pending = false;
     portEXIT_CRITICAL(&text_mux);
-    if (buf[0]) { logo = String(buf); use_sprite = false; }  // 文字を送られたら文字が跳ねる
+    if (buf[0]) logo = String(buf);
     applyBox();
-    dirty = true;
-  }
-  if (spr_pending) {
-    portENTER_CRITICAL(&text_mux);
-    memcpy(spr, pending_spr, SPR_MAX);
-    spr_pending = false;
-    portEXIT_CRITICAL(&text_mux);
-    use_sprite = true;  // 絵を送られたら絵が跳ねる
-    applyBox();
-    prefs.putBytes("spr", spr, sprBytes(spr[0], spr[1]));  // 絵は大きいので変わった時だけ書く
     dirty = true;
   }
   if (dirty) {  // NVS への書き込みは BLE の割り込みの外で
@@ -308,7 +267,6 @@ void loop() {
     prefs.putUChar("sy", speed_y);
     prefs.putString("logo", logo);
     prefs.putUChar("bw", box_w);
-    prefs.putBool("usespr", use_sprite);
   }
 
   u8g2.clearBuffer();

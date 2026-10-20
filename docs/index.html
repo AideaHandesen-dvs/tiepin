@@ -62,15 +62,7 @@
   .num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
   label.check { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
   label.check input { width: 18px; height: 18px; accent-color: var(--accent); }
-  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
-  .tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
-  .grid-wrap { overflow-x: auto; margin: 8px 0; }
-  #spr { display: block; touch-action: none; image-rendering: pixelated; margin: 0 auto; border-radius: 4px; }
-  .tools { display: flex; flex-wrap: wrap; gap: 6px; }
-  .tools button, .tools select { flex: 1 1 auto; }
-  select { font: inherit; min-height: 44px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); padding: 0 10px; }
-  #pvCanvas { image-rendering: pixelated; width: 100%; height: 100%; display: block; }
-  fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+  fieldset { border: 0; padding: 0; margin: 0; }
   fieldset:disabled { opacity: .5; }
   footer { font-size: 12px; color: var(--sub); margin-top: 20px; }
   footer a { color: inherit; }
@@ -91,7 +83,7 @@
   <fieldset id="controls" disabled>
     <section class="card">
       <h2>表示</h2>
-      <div class="oled" id="preview"><span id="pvText">DVD</span><canvas id="pvCanvas" width="128" height="64" hidden></canvas></div>
+      <div class="oled" id="preview">DVD</div>
       <div class="modes" role="group" aria-label="表示">
         <button data-mode="0" aria-pressed="false">跳ねる</button>
         <button data-mode="1" aria-pressed="false">文字</button>
@@ -110,12 +102,7 @@
     </section>
 
     <section class="card">
-      <h2>跳ねるもの（DVD）</h2>
-      <div class="tabs" role="tablist">
-        <button role="tab" data-kind="0" aria-selected="true">文字</button>
-        <button role="tab" data-kind="1" aria-selected="false">絵</button>
-      </div>
-      <div id="kind0">
+      <h2>跳ねる文字（DVD）</h2>
       <div class="row">
         <input id="logo" type="text" autocomplete="off" placeholder="DVD">
         <button id="sendLogo">送る</button>
@@ -124,25 +111,6 @@
       <label class="range">幅<input id="bw" type="range" min="8" max="120" value="32"><span class="num" id="bwv">32</span></label>
       <label class="check"><input id="bwAuto" type="checkbox"> 幅を文字に合わせる（本体が測る）</label>
       <p class="hint">幅は壁に当たる判定の幅。文字より狭くすると壁にめり込み、広くすると手前で跳ね返る。角に入る間隔も変わる。</p>
-      </div>
-      <div id="kind1" hidden>
-        <div class="tools">
-          <select id="sprSize" aria-label="絵の大きさ">
-            <option value="16x16">16×16</option>
-            <option value="24x16">24×16</option>
-            <option value="32x16" selected>32×16</option>
-            <option value="32x32">32×32</option>
-            <option value="48x24">48×24</option>
-            <option value="64x32">64×32</option>
-          </select>
-          <button id="sprClear">全部消す</button>
-          <button id="sprInvert">白黒反転</button>
-          <button id="sprFromText">文字から下絵</button>
-        </div>
-        <div class="grid-wrap"><canvas id="spr"></canvas></div>
-        <p class="hint">マスを指でなぞって描く。点の上から始めると消しゴムになる。絵の大きさがそのまま当たり判定の箱になる。</p>
-        <button id="sendSpr" class="primary">この絵を跳ねさせる</button>
-      </div>
       <label class="range">横<input id="sx" type="range" min="1" max="6" value="2"><span class="num" id="sxv">2</span></label>
       <label class="range">縦<input id="sy" type="range" min="1" max="6" value="1"><span class="num" id="syv">1</span></label>
       <p class="hint" id="corner"></p>
@@ -166,14 +134,12 @@ const SPEED = "7e1a0004-6a3d-4c1b-9e57-71e9e0c0de01"; // 2 バイト：dx, dy（
 const TIME  = "7e1a0005-6a3d-4c1b-9e57-71e9e0c0de01"; // UNIX 秒（int32 LE）＋ UTC からの分（int32 LE）
 const LOGO  = "7e1a0006-6a3d-4c1b-9e57-71e9e0c0de01"; // 跳ねる文字（UTF-8・最大 32 バイト）
 const BOX   = "7e1a0007-6a3d-4c1b-9e57-71e9e0c0de01"; // 書く：幅（8〜120・0＝文字に合わせる） 読む：設定・実際の幅・高さ
-const SPR   = "7e1a0008-6a3d-4c1b-9e57-71e9e0c0de01"; // 跳ねる絵：幅・高さ＋XBM（1 行 ceil(幅/8) バイト・左の点が下位ビット）
 const TEXT_MAX = 96, LOGO_MAX = 32;
 
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder(), dec = new TextDecoder();
 let device = null, ch = {};
-let current = { mode: 0, text: "tiepin", logo: "DVD", kind: 0 }; // kind：跳ねるのは 0=文字 1=絵
-let sprite = { w: 32, h: 16, px: new Uint8Array(32 * 16) };
+let current = { mode: 0, text: "tiepin", logo: "DVD" };
 let box = { w: 32, h: 14 }; // 本体が実際に使っている当たり判定の箱（角の計算に使う）
 
 function setState(on, msg) {
@@ -227,11 +193,8 @@ function updateCorner() {
 function renderMode() {
   document.querySelectorAll("[data-mode]").forEach((b) =>
     b.setAttribute("aria-pressed", String(+b.dataset.mode === current.mode)));
-  const pv = $("pvText"), cv = $("pvCanvas");
-  const showSprite = current.mode === 0 && current.kind === 1;
-  pv.hidden = showSprite; cv.hidden = !showSprite;
-  if (showSprite) drawPreviewSprite();
-  else if (current.mode === 1) pv.textContent = current.text || " ";
+  const pv = $("preview");
+  if (current.mode === 1) pv.textContent = current.text || " ";
   else if (current.mode === 2) {
     const d = new Date();
     pv.textContent = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -243,126 +206,6 @@ function updateLogoBytes() {
   $("logoBytes").textContent = `${n} / ${LOGO_MAX} バイト` + (n > LOGO_MAX ? "（はみ出た分は送らない）" : "");
   $("logoBytes").classList.toggle("over", n > LOGO_MAX);
 }
-function renderKind(k) {
-  document.querySelectorAll("[data-kind]").forEach((b) =>
-    b.setAttribute("aria-selected", String(+b.dataset.kind === k)));
-  $("kind0").hidden = k !== 0; $("kind1").hidden = k !== 1;
-  if (k === 1) drawSprite();
-}
-
-// ---- 絵を描く
-const sprCv = $("spr"), sprCtx = sprCv.getContext("2d");
-let cell = 8;
-function sprCellSize() {
-  const avail = $("kind1").clientWidth || sprCv.parentElement.clientWidth || 320;
-  return Math.max(6, Math.min(20, Math.floor(avail / sprite.w)));
-}
-function drawSprite() {
-  cell = sprCellSize();
-  const W = sprite.w * cell, H = sprite.h * cell, dpr = window.devicePixelRatio || 1;
-  sprCv.width = W * dpr; sprCv.height = H * dpr;
-  sprCv.style.width = W + "px"; sprCv.style.height = H + "px";
-  const g = sprCtx;
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
-  g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--oled-ink");
-  for (let y = 0; y < sprite.h; y++)
-    for (let x = 0; x < sprite.w; x++)
-      if (sprite.px[y * sprite.w + x]) g.fillRect(x * cell, y * cell, cell, cell);
-  g.strokeStyle = "rgba(255,255,255,.12)"; g.lineWidth = 1;
-  g.beginPath();
-  for (let x = 0; x <= sprite.w; x++) { g.moveTo(x * cell + .5, 0); g.lineTo(x * cell + .5, H); }
-  for (let y = 0; y <= sprite.h; y++) { g.moveTo(0, y * cell + .5); g.lineTo(W, y * cell + .5); }
-  g.stroke();
-  g.strokeStyle = "rgba(255,255,255,.3)"; // 8 マスごとに濃い線
-  g.beginPath();
-  for (let x = 8; x < sprite.w; x += 8) { g.moveTo(x * cell + .5, 0); g.lineTo(x * cell + .5, H); }
-  for (let y = 8; y < sprite.h; y += 8) { g.moveTo(0, y * cell + .5); g.lineTo(W, y * cell + .5); }
-  g.stroke();
-}
-function drawPreviewSprite() {
-  const g = $("pvCanvas").getContext("2d");
-  g.fillStyle = "#000"; g.fillRect(0, 0, 128, 64);
-  g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--oled-ink");
-  const ox = (128 - sprite.w) >> 1, oy = (64 - sprite.h) >> 1;
-  for (let y = 0; y < sprite.h; y++)
-    for (let x = 0; x < sprite.w; x++)
-      if (sprite.px[y * sprite.w + x]) g.fillRect(ox + x, oy + y, 1, 1);
-}
-let painting = null, lastCell = null;
-function cellAt(e) {
-  const r = sprCv.getBoundingClientRect();
-  return [Math.floor((e.clientX - r.left) / cell), Math.floor((e.clientY - r.top) / cell)];
-}
-function setPx(x, y, v) {
-  if (x < 0 || y < 0 || x >= sprite.w || y >= sprite.h) return;
-  sprite.px[y * sprite.w + x] = v;
-  sprCtx.fillStyle = v ? getComputedStyle(document.documentElement).getPropertyValue("--oled-ink") : "#000";
-  sprCtx.fillRect(x * cell + 1, y * cell + 1, cell - 1, cell - 1);
-}
-sprCv.addEventListener("pointerdown", (e) => {
-  const [x, y] = cellAt(e);
-  if (x < 0 || y < 0 || x >= sprite.w || y >= sprite.h) return;
-  painting = sprite.px[y * sprite.w + x] ? 0 : 1; // 点の上から始めたら消す
-  lastCell = [x, y];
-  setPx(x, y, painting);
-  sprCv.setPointerCapture(e.pointerId);
-});
-sprCv.addEventListener("pointermove", (e) => {
-  if (painting === null) return;
-  const [x1, y1] = cellAt(e), [x0, y0] = lastCell;
-  // 指が速く動いても線が途切れないよう、前のマスから線でつなぐ
-  const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
-  for (let i = 1; i <= n; i++) setPx(Math.round(x0 + (x1 - x0) * i / n), Math.round(y0 + (y1 - y0) * i / n), painting);
-  lastCell = [x1, y1];
-});
-["pointerup", "pointercancel"].forEach((t) => sprCv.addEventListener(t, () => {
-  if (painting !== null) drawSprite();
-  painting = null;
-}));
-function resizeSprite(w, h) {
-  const px = new Uint8Array(w * h); // 左上を残して大きさを変える
-  for (let y = 0; y < Math.min(h, sprite.h); y++)
-    for (let x = 0; x < Math.min(w, sprite.w); x++) px[y * w + x] = sprite.px[y * sprite.w + x];
-  sprite = { w, h, px };
-  $("sprSize").value = `${w}x${h}`;
-  drawSprite();
-}
-$("sprSize").addEventListener("change", () => { const [w, h] = $("sprSize").value.split("x").map(Number); resizeSprite(w, h); });
-$("sprClear").addEventListener("click", () => { sprite.px.fill(0); drawSprite(); });
-$("sprInvert").addEventListener("click", () => { sprite.px = sprite.px.map((v) => 1 - v); drawSprite(); });
-// 跳ねる文字を絵に起こす（ここから描き足す）
-$("sprFromText").addEventListener("click", () => {
-  const t = $("logo").value || current.logo || "DVD";
-  const c = document.createElement("canvas"); c.width = sprite.w; c.height = sprite.h;
-  const g = c.getContext("2d");
-  let size = sprite.h;
-  g.textBaseline = "middle"; g.textAlign = "center";
-  do { g.font = `bold ${size}px sans-serif`; } while (g.measureText(t).width > sprite.w && --size > 6);
-  g.fillStyle = "#fff"; g.fillText(t, sprite.w / 2, sprite.h / 2 + 1);
-  const d = g.getImageData(0, 0, sprite.w, sprite.h).data;
-  for (let i = 0; i < sprite.w * sprite.h; i++) sprite.px[i] = d[i * 4 + 3] > 110 ? 1 : 0;
-  drawSprite();
-});
-function encodeSprite() {
-  const row = (sprite.w + 7) >> 3, b = new Uint8Array(2 + row * sprite.h);
-  b[0] = sprite.w; b[1] = sprite.h;
-  for (let y = 0; y < sprite.h; y++)
-    for (let x = 0; x < sprite.w; x++)
-      if (sprite.px[y * sprite.w + x]) b[2 + y * row + (x >> 3)] |= 1 << (x & 7);
-  return b;
-}
-function decodeSprite(dv) {
-  const w = dv.getUint8(0), h = dv.getUint8(1), row = (w + 7) >> 3;
-  if (w < 8 || h < 8 || dv.byteLength < 2 + row * h) return;
-  const px = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++)
-      px[y * w + x] = (dv.getUint8(2 + y * row + (x >> 3)) >> (x & 7)) & 1;
-  sprite = { w, h, px };
-  if ([...$("sprSize").options].some((o) => o.value === `${w}x${h}`)) $("sprSize").value = `${w}x${h}`;
-}
-
 function renderBox() {
   const auto = $("bwAuto").checked;
   $("bw").disabled = auto;
@@ -377,7 +220,6 @@ async function readBox() {
     $("bwAuto").checked = b.getUint8(0) === 0;
     box = { w: b.getUint8(1), h: b.getUint8(2) };
   }
-  if (b.byteLength >= 4) current.kind = b.getUint8(3);
   renderBox();
 }
 
@@ -418,7 +260,6 @@ async function connect(all = false) {
       time: await svc.getCharacteristic(TIME),
       logo: await svc.getCharacteristic(LOGO),
       box: await svc.getCharacteristic(BOX),
-      spr: await svc.getCharacteristic(SPR),
     };
     // 今の設定を読んでページに映す
     current.mode = (await ch.mode.readValue()).getUint8(0);
@@ -429,10 +270,7 @@ async function connect(all = false) {
     current.logo = dec.decode(await ch.logo.readValue());
     $("logo").value = current.logo;
     updateLogoBytes();
-    const sv = await ch.spr.readValue();
-    if (sv.byteLength >= 2) decodeSprite(sv);
     await readBox();
-    renderKind(current.kind);
     await sendTime();
     updateBytes(); updateCorner(); renderMode();
     setState(true, `つながった（${device.name || "tiepin"}）`);
@@ -494,22 +332,12 @@ function sendLogo() {
   current.logo = t;
   current.mode = 0; renderMode(); // 跳ねる文字を送ったら DVD の表示に切り替える
   write(async () => {
-    current.kind = 0;
     await ch.logo.writeValueWithResponse(enc.encode(t));
     await ch.mode.writeValueWithResponse(Uint8Array.of(0));
     await readBox(); // 文字に合わせる設定なら幅が変わる
   });
 }
 $("sendLogo").addEventListener("click", sendLogo);
-document.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => renderKind(+b.dataset.kind)));
-$("sendSpr").addEventListener("click", () => {
-  current.kind = 1; current.mode = 0; renderMode(); // 絵を送ったら絵が跳ねる
-  write(async () => {
-    await ch.spr.writeValueWithResponse(encodeSprite());
-    await ch.mode.writeValueWithResponse(Uint8Array.of(0));
-    await readBox();
-  });
-});
 $("logo").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) sendLogo(); });
 let boxTimer;
 function sendBox() {
@@ -525,7 +353,7 @@ $("bw").addEventListener("input", () => {
 });
 $("bwAuto").addEventListener("change", () => { $("bw").disabled = $("bwAuto").checked; sendBox(); });
 
-updateBytes(); updateLogoBytes(); updateCorner(); renderMode(); renderKind(0);
+updateBytes(); updateLogoBytes(); updateCorner(); renderMode();
 setInterval(() => { if (current.mode === 2) renderMode(); }, 10000);
 </script>
 </body>
