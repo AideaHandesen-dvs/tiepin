@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tiepin リモコン</title>
+<meta name="theme-color" content="#111111">
+<style>
+  /* tiepin を Android の Chrome（Web Bluetooth）から操作するページ。UUID は src/main.cpp と揃える */
+  :root {
+    --bg: #f4f4f1; --card: #ffffff; --ink: #161616; --sub: #66665f; --line: #deded8;
+    --accent: #1f6feb; --accent-ink: #ffffff; --warn: #b42318; --ok: #1a7f37;
+    --oled-bg: #000000; --oled-ink: #9fe6ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f0f10; --card: #19191b; --ink: #ececea; --sub: #9a9a94; --line: #2c2c2f;
+      --accent: #4c8dff; --accent-ink: #0b0b0c; --warn: #ff7b72; --ok: #56d364;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f0f10; --card: #19191b; --ink: #ececea; --sub: #9a9a94; --line: #2c2c2f;
+    --accent: #4c8dff; --accent-ink: #0b0b0c; --warn: #ff7b72; --ok: #56d364;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  }
+  main { max-width: 480px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: .02em; }
+  .lead { color: var(--sub); margin: 0 0 18px; font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 14px; color: var(--sub); font-weight: 600; margin: 0 0 10px; }
+  button {
+    font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    border-radius: 10px; padding: 10px 14px; cursor: pointer; min-height: 44px;
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; width: 100%; }
+  button:disabled { opacity: .45; cursor: default; }
+  .status { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14px; color: var(--sub); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
+  .dot.on { background: var(--ok); }
+  .err { color: var(--warn); font-size: 14px; margin-top: 8px; }
+  .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .modes button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  .oled {
+    background: var(--oled-bg); color: var(--oled-ink); border-radius: 6px; aspect-ratio: 2 / 1;
+    display: grid; place-items: center; overflow: hidden; margin-bottom: 12px;
+    font: 600 20px/1 ui-monospace, "SF Mono", Menlo, monospace; white-space: nowrap;
+  }
+  input[type=text] {
+    width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > input { flex: 1; min-width: 0; }
+  .hint { font-size: 13px; color: var(--sub); margin: 6px 0 0; }
+  .hint.over { color: var(--warn); }
+  label.range { display: grid; grid-template-columns: 2.5em 1fr 1.5em; gap: 10px; align-items: center; margin: 6px 0; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  fieldset { border: 0; padding: 0; margin: 0; }
+  fieldset:disabled { opacity: .5; }
+  footer { font-size: 12px; color: var(--sub); margin-top: 20px; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>tiepin リモコン</h1>
+  <p class="lead">ネクタイピンの小さな画面に出すものを選ぶ。選んだものは本体が覚える。</p>
+
+  <section class="card">
+    <button id="connect" class="primary">tiepin につなぐ</button>
+    <div class="status"><span id="dot" class="dot"></span><span id="state">つながっていない</span></div>
+    <div id="err" class="err" hidden></div>
+  </section>
+
+  <fieldset id="controls" disabled>
+    <section class="card">
+      <h2>表示</h2>
+      <div class="oled" id="preview">DVD</div>
+      <div class="modes" role="group" aria-label="表示">
+        <button data-mode="0" aria-pressed="false">DVD</button>
+        <button data-mode="1" aria-pressed="false">文字</button>
+        <button data-mode="2" aria-pressed="false">時計</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>文字</h2>
+      <div class="row">
+        <input id="text" type="text" autocomplete="off" placeholder="tiepin">
+        <button id="sendText">送る</button>
+      </div>
+      <p class="hint" id="bytes">0 / 96 バイト</p>
+      <p class="hint">日本語も出せる（ひらがな・カタカナ・よく使う漢字）。本体のフォントに無い字は空白になる。画面に収まらない長さなら右から左へ流れる。</p>
+    </section>
+
+    <section class="card">
+      <h2>DVD の速さ</h2>
+      <label class="range">横<input id="sx" type="range" min="1" max="6" value="2"><span class="num" id="sxv">2</span></label>
+      <label class="range">縦<input id="sy" type="range" min="1" max="6" value="1"><span class="num" id="syv">1</span></label>
+      <p class="hint" id="corner"></p>
+    </section>
+
+    <section class="card">
+      <h2>時計</h2>
+      <p class="hint" style="margin-top:0">本体は時刻を覚えていられないので、つなぐたびにこのスマホの時刻を送っている。電源を入れ直したら、もう一度つなぐ。</p>
+      <button id="sendTime">今の時刻を送り直す</button>
+    </section>
+  </fieldset>
+
+  <footer>Android の Chrome で開く（iPhone の Safari は Web Bluetooth に未対応）。<a href="https://github.com/AideaHandesen-dvs/tiepin">ソース</a></footer>
+</main>
+
+<script>
+const SVC   = "7e1a0001-6a3d-4c1b-9e57-71e9e0c0de01";
+const MODE  = "7e1a0002-6a3d-4c1b-9e57-71e9e0c0de01"; // 1 バイト：0=DVD 1=文字 2=時計
+const TEXT  = "7e1a0003-6a3d-4c1b-9e57-71e9e0c0de01"; // UTF-8（最大 96 バイト）
+const SPEED = "7e1a0004-6a3d-4c1b-9e57-71e9e0c0de01"; // 2 バイト：dx, dy（1〜6）
+const TIME  = "7e1a0005-6a3d-4c1b-9e57-71e9e0c0de01"; // UNIX 秒（int32 LE）＋ UTC からの分（int32 LE）
+const TEXT_MAX = 96;
+
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder();
+let device = null, ch = {};
+let current = { mode: 0, text: "tiepin" };
+
+function setState(on, msg) {
+  $("dot").classList.toggle("on", on);
+  $("state").textContent = msg;
+  $("controls").disabled = !on;
+  $("connect").textContent = on ? "切る" : (device ? "つなぎ直す" : "tiepin につなぐ");
+}
+function showErr(e) {
+  const el = $("err");
+  if (!e) { el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = typeof e === "string" ? e : (e.message || String(e));
+}
+
+// 本体側は 96 バイトで切る＝字の途中で切れないよう、ページ側で字単位に詰める
+function fitBytes(s) {
+  let out = "";
+  for (const c of s) {
+    if (enc.encode(out + c).length > TEXT_MAX) break;
+    out += c;
+  }
+  return out;
+}
+
+// 本体の drawDvd と同じ動きをなぞって、角に入る間隔を出す（電源を入れた時の位置から）
+function cornerPeriod(sx, sy) {
+  let x = 10, y = 31, dx = sx, dy = sy, last = -1;
+  for (let f = 0; f < 200000; f++) {
+    let hx = false, hy = false;
+    if (x <= 0 || x + 32 >= 128) { dx = -dx; hx = true; }
+    if (y - 14 <= 0 || y >= 64) { dy = -dy; hy = true; }
+    if (hx && hy) {
+      if (last >= 0) return f - last;
+      last = f;
+    }
+    x += dx; y += dy;
+  }
+  return last >= 0 ? -2 : -1; // -1 = 一度も入らない
+}
+function updateCorner() {
+  const sx = +$("sx").value, sy = +$("sy").value;
+  $("sxv").textContent = sx; $("syv").textContent = sy;
+  const p = cornerPeriod(sx, sy);
+  const FRAME_S = 1 / 30; // 1 コマ ≒ 33ms（delay(30)＋描画）
+  $("corner").textContent = p > 0
+    ? `角に入るのは ${p} コマごと（約 ${Math.round(p * FRAME_S)} 秒に 1 度）`
+    : "この速さだと、一生角に入らない";
+}
+
+function renderMode() {
+  document.querySelectorAll("[data-mode]").forEach((b) =>
+    b.setAttribute("aria-pressed", String(+b.dataset.mode === current.mode)));
+  const pv = $("preview");
+  if (current.mode === 1) pv.textContent = current.text || " ";
+  else if (current.mode === 2) {
+    const d = new Date();
+    pv.textContent = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  } else pv.textContent = "DVD";
+}
+
+function updateBytes() {
+  const n = enc.encode($("text").value).length;
+  $("bytes").textContent = `${n} / ${TEXT_MAX} バイト` + (n > TEXT_MAX ? "（はみ出た分は送らない）" : "");
+  $("bytes").classList.toggle("over", n > TEXT_MAX);
+}
+
+async function sendTime() {
+  const b = new DataView(new ArrayBuffer(8));
+  b.setInt32(0, Math.floor(Date.now() / 1000), true);
+  b.setInt32(4, -new Date().getTimezoneOffset(), true);
+  await ch.time.writeValueWithResponse(b.buffer);
+}
+
+async function connect() {
+  showErr(null);
+  if (!navigator.bluetooth) {
+    showErr("このブラウザは Web Bluetooth が使えない。Android の Chrome で開いてくれ。");
+    return;
+  }
+  try {
+    if (!device) {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [SVC] }, { name: "tiepin" }],
+        optionalServices: [SVC],
+      });
+      device.addEventListener("gattserverdisconnected", () => setState(false, "切れた"));
+    }
+    setState(false, "つないでいる…");
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    ch = {
+      mode: await svc.getCharacteristic(MODE),
+      text: await svc.getCharacteristic(TEXT),
+      speed: await svc.getCharacteristic(SPEED),
+      time: await svc.getCharacteristic(TIME),
+    };
+    // 今の設定を読んでページに映す
+    current.mode = (await ch.mode.readValue()).getUint8(0);
+    current.text = dec.decode(await ch.text.readValue());
+    const sp = await ch.speed.readValue();
+    $("sx").value = sp.getUint8(0); $("sy").value = sp.getUint8(1);
+    $("text").value = current.text;
+    await sendTime();
+    updateBytes(); updateCorner(); renderMode();
+    setState(true, `つながった（${device.name || "tiepin"}）`);
+  } catch (e) {
+    if (e.name === "NotFoundError") { setState(false, "つながっていない"); return; } // 選ぶ画面を閉じた
+    setState(false, "つながっていない");
+    showErr(e);
+  }
+}
+
+// 書き込みは一本ずつ（GATT は同時に書くと失敗する）
+let queue = Promise.resolve();
+function write(fn) {
+  queue = queue.then(fn).catch(showErr);
+  return queue;
+}
+
+$("connect").addEventListener("click", () => {
+  if (device && device.gatt.connected) device.gatt.disconnect();
+  else connect();
+});
+document.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
+  current.mode = +b.dataset.mode;
+  renderMode();
+  write(() => ch.mode.writeValueWithResponse(Uint8Array.of(current.mode)));
+}));
+$("text").addEventListener("input", updateBytes);
+function sendText() {
+  const t = fitBytes($("text").value);
+  $("text").value = t; updateBytes();
+  current.text = t;
+  current.mode = 1; renderMode(); // 文字を送ったら文字の表示に切り替える
+  write(async () => {
+    await ch.text.writeValueWithResponse(enc.encode(t));
+    await ch.mode.writeValueWithResponse(Uint8Array.of(1));
+  });
+}
+$("sendText").addEventListener("click", sendText);
+$("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) sendText(); });
+let speedTimer;
+["sx", "sy"].forEach((id) => $(id).addEventListener("input", () => {
+  updateCorner();
+  clearTimeout(speedTimer); // つまみを動かしている間は送り過ぎない
+  speedTimer = setTimeout(() =>
+    write(() => ch.speed.writeValueWithResponse(Uint8Array.of(+$("sx").value, +$("sy").value))), 150);
+}));
+$("sendTime").addEventListener("click", () => write(sendTime));
+
+updateBytes(); updateCorner(); renderMode();
+setInterval(() => { if (current.mode === 2) renderMode(); }, 10000);
+</script>
+</body>
+</html>

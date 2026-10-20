@@ -197,6 +197,7 @@ void loop() {
     portEXIT_CRITICAL(&text_mux);
     text = String(buf);
     text_x = 128;
+    dirty = true;  // 受け取った文字で保存し直す（BLE の dirty が先に消費されていても取りこぼさない）
   }
   if (dirty) {  // NVS への書き込みは BLE の割り込みの外で
     dirty = false;
