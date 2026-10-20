@@ -75,6 +75,7 @@
     <button id="connect" class="primary">tiepin につなぐ</button>
     <div class="status"><span id="dot" class="dot"></span><span id="state">つながっていない</span></div>
     <div id="err" class="err" hidden></div>
+    <p class="hint" id="allWrap" hidden>一覧に tiepin が出ないなら → <button id="connectAll">近くの機器を全部出して選ぶ</button></p>
   </section>
 
   <fieldset id="controls" disabled>
@@ -200,7 +201,7 @@ async function sendTime() {
   await ch.time.writeValueWithResponse(b.buffer);
 }
 
-async function connect() {
+async function connect(all = false) {
   showErr(null);
   if (!navigator.bluetooth) {
     showErr("このブラウザは Web Bluetooth が使えない。Android の Chrome で開いてくれ。");
@@ -208,10 +209,10 @@ async function connect() {
   }
   try {
     if (!device) {
-      device = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [SVC] }, { name: "tiepin" }],
-        optionalServices: [SVC],
-      });
+      // all＝絞り込まずに全部出す（tiepin が名乗っているのに絞り込みで落ちているのか、そもそも名乗っていないのかを見分ける）
+      device = await navigator.bluetooth.requestDevice(all
+        ? { acceptAllDevices: true, optionalServices: [SVC] }
+        : { filters: [{ services: [SVC] }, { name: "tiepin" }], optionalServices: [SVC] });
       device.addEventListener("gattserverdisconnected", () => setState(false, "切れた"));
     }
     setState(false, "つないでいる…");
@@ -233,9 +234,14 @@ async function connect() {
     updateBytes(); updateCorner(); renderMode();
     setState(true, `つながった（${device.name || "tiepin"}）`);
   } catch (e) {
-    if (e.name === "NotFoundError") { setState(false, "つながっていない"); return; } // 選ぶ画面を閉じた
     setState(false, "つながっていない");
-    showErr(e);
+    $("allWrap").hidden = false;
+    if (e.name === "NotFoundError") { // 一覧を閉じた・何も選ばなかった
+      showErr("tiepin を選べなかった。一覧に出てこなかったなら、本体の電源と、スマホの位置情報・Bluetooth がオンかを見てくれ。");
+      return;
+    }
+    if (device && e.name !== "NetworkError") device = null; // 選んだ機器が tiepin じゃなかった等＝次は選び直す
+    showErr(`${e.name}: ${e.message}`);
   }
 }
 
@@ -250,6 +256,7 @@ $("connect").addEventListener("click", () => {
   if (device && device.gatt.connected) device.gatt.disconnect();
   else connect();
 });
+$("connectAll").addEventListener("click", () => { device = null; connect(true); });
 document.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
   current.mode = +b.dataset.mode;
   renderMode();
