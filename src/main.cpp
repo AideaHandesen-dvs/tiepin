@@ -11,7 +11,7 @@
 U8G2_SH1107_64X128_F_HW_I2C u8g2(U8G2_R1, /* reset=*/ U8X8_PIN_NONE);
 
 #define SVC_UUID   "7e1a0001-6a3d-4c1b-9e57-71e9e0c0de01"
-#define MODE_UUID  "7e1a0002-6a3d-4c1b-9e57-71e9e0c0de01"  // 1 バイト：0=DVD 1=文字 2=時計
+#define MODE_UUID  "7e1a0002-6a3d-4c1b-9e57-71e9e0c0de01"  // 1 バイト：0=DVD 1=文字 2=時計 3=ライフ（ライフ中にもう一度 3 でまき直す）
 #define TEXT_UUID  "7e1a0003-6a3d-4c1b-9e57-71e9e0c0de01"  // UTF-8 の文字列（最大 96 バイト）
 #define SPEED_UUID "7e1a0004-6a3d-4c1b-9e57-71e9e0c0de01"  // 2 バイト：dx, dy（1〜6）
 #define TIME_UUID  "7e1a0005-6a3d-4c1b-9e57-71e9e0c0de01"  // 8 バイト：UNIX 秒（int32 LE）＋ UTC からの分（int32 LE）
@@ -19,7 +19,7 @@ U8G2_SH1107_64X128_F_HW_I2C u8g2(U8G2_R1, /* reset=*/ U8X8_PIN_NONE);
 #define BOX_UUID   "7e1a0007-6a3d-4c1b-9e57-71e9e0c0de01"  // 書く 1 バイト：当たり判定の幅（8〜120・0＝文字に合わせる）
                                                             // 読む 3 バイト：幅の設定・実際の幅・実際の高さ
 
-enum Mode : uint8_t { MODE_DVD = 0, MODE_TEXT = 1, MODE_CLOCK = 2, MODE_COUNT };
+enum Mode : uint8_t { MODE_DVD = 0, MODE_TEXT = 1, MODE_CLOCK = 2, MODE_LIFE = 3, MODE_COUNT };
 
 Preferences prefs;
 volatile uint8_t mode = MODE_DVD;
@@ -46,6 +46,17 @@ bool is_inverse = false;
 
 // 文字
 int text_x = 128;
+
+// ライフゲーム（盤＝画面の 128×64・端は反対側とつながる）
+const int LW = 128, LH = 64;
+uint8_t life[LH][LW], life_next[LH][LW];
+volatile bool life_reseed = true;
+uint32_t life_hist[8];      // 直近の盤の指紋＝短い周期の繰り返しを見つける
+int life_hist_i = 0;
+// 300 世代ごとに生きているマスの数の幅を見る＝ほとんど増減しないなら落ち着いた（グライダーと点滅が残るだけ、など）
+int life_gen = 0, life_min = 0, life_max = 0;
+bool life_calm = false;
+int life_stale = 0;         // 止まった・繰り返しと見てからの世代＝少し見せてからまき直す
 
 void applySpeed() {
   dx = (dx < 0 ? -1 : 1) * speed_x;
@@ -153,6 +164,7 @@ class Writes : public BLECharacteristicCallbacks {
     const uint8_t *v = c->getData();
     size_t len = c->getLength();
     if (c == ch_mode && len >= 1 && v[0] < MODE_COUNT) {
+      if (v[0] == MODE_LIFE) life_reseed = true;  // ライフを選ぶたびにまき直す
       mode = v[0];
     } else if (c == ch_text) {
       portENTER_CRITICAL(&text_mux);
@@ -291,6 +303,45 @@ void drawClock() {
   u8g2.drawStr((128 - w) / 2, 46, buf);
 }
 
+void seedLife() {
+  for (int y = 0; y < LH; y++)
+    for (int x = 0; x < LW; x++) life[y][x] = (esp_random() % 100) < 30;  // 3 割くらいまく
+  memset(life_hist, 0, sizeof(life_hist));
+  life_gen = 0; life_min = INT_MAX; life_max = 0; life_calm = false; life_stale = 0;
+}
+
+void drawLife() {
+  if (life_reseed) { life_reseed = false; seedLife(); }
+  int pop = 0;
+  uint32_t h = 2166136261u;  // FNV-1a で盤の指紋を取る
+  for (int y = 0; y < LH; y++) {
+    const uint8_t *up = life[(y + LH - 1) % LH], *row = life[y], *dn = life[(y + 1) % LH];
+    for (int x = 0; x < LW; x++) {
+      int l = (x + LW - 1) % LW, r = (x + 1) % LW;
+      int n = up[l] + up[x] + up[r] + row[l] + row[r] + dn[l] + dn[x] + dn[r];
+      uint8_t a = n == 3 || (n == 2 && row[x]);
+      life_next[y][x] = a;
+      if (a) { pop++; u8g2.drawPixel(x, y); h = (h ^ (y * LW + x)) * 16777619u; }
+    }
+  }
+  memcpy(life, life_next, sizeof(life));
+
+  // 全滅・同じ盤の繰り返し・数がほとんど動かない＝見どころは終わり
+  bool repeat = false;
+  for (uint32_t old : life_hist) if (old == h) repeat = true;
+  life_hist[life_hist_i++ % 8] = h;
+  life_min = min(life_min, pop); life_max = max(life_max, pop);
+  if (++life_gen % 300 == 0) {
+    life_calm = life_max - life_min <= 12;
+    life_min = INT_MAX; life_max = 0;
+  }
+  if (pop == 0 || repeat || life_calm) {
+    if (++life_stale > 90) life_reseed = true;  // 3 秒くらい見せてからまき直す
+  } else {
+    life_stale = 0;
+  }
+}
+
 void setup() {
   Wire.begin(8, 9);
   u8g2.begin();
@@ -346,6 +397,7 @@ void loop() {
   switch (mode) {
     case MODE_TEXT:  drawText();  break;
     case MODE_CLOCK: drawClock(); break;
+    case MODE_LIFE:  drawLife();  break;
     default:         drawDvd();   break;
   }
   u8g2.sendBuffer();

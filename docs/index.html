@@ -42,7 +42,8 @@
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
   .dot.on { background: var(--ok); }
   .err { color: var(--warn); font-size: 14px; margin-top: 8px; }
-  .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .modes button { padding: 10px 2px; white-space: nowrap; }
   .modes button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
   .oled {
     background: var(--oled-bg); color: var(--oled-ink); border-radius: 6px; aspect-ratio: 2 / 1;
@@ -91,7 +92,9 @@
         <button data-mode="0" aria-pressed="false">跳ねる</button>
         <button data-mode="1" aria-pressed="false">文字</button>
         <button data-mode="2" aria-pressed="false">時計</button>
+        <button data-mode="3" aria-pressed="false">ライフ</button>
       </div>
+      <p class="hint" id="lifeHint" hidden>ライフゲーム：ランダムにまいて育てる。動きが落ち着いたら自分でまき直す。「ライフ」をもう一度押してもまき直す。</p>
     </section>
 
     <section class="card">
@@ -133,7 +136,7 @@
 
 <script>
 const SVC   = "7e1a0001-6a3d-4c1b-9e57-71e9e0c0de01";
-const MODE  = "7e1a0002-6a3d-4c1b-9e57-71e9e0c0de01"; // 1 バイト：0=DVD 1=文字 2=時計
+const MODE  = "7e1a0002-6a3d-4c1b-9e57-71e9e0c0de01"; // 1 バイト：0=DVD 1=文字 2=時計 3=ライフ（もう一度 3 でまき直す）
 const TEXT  = "7e1a0003-6a3d-4c1b-9e57-71e9e0c0de01"; // UTF-8（最大 96 バイト）
 const SPEED = "7e1a0004-6a3d-4c1b-9e57-71e9e0c0de01"; // 2 バイト：dx, dy（1〜6）
 const TIME  = "7e1a0005-6a3d-4c1b-9e57-71e9e0c0de01"; // UNIX 秒（int32 LE）＋ UTC からの分（int32 LE）
@@ -205,7 +208,9 @@ function renderMode() {
   else if (current.mode === 2) {
     const d = new Date();
     pv.textContent = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  } else pv.textContent = current.logo || "DVD";
+  } else if (current.mode === 3) pv.textContent = "ライフゲーム";
+  else pv.textContent = current.logo || "DVD";
+  $("lifeHint").hidden = current.mode !== 3;
 }
 
 function updateLogoBytes() {
