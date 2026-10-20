@@ -2,7 +2,7 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <Preferences.h>
-#include <NimBLEDevice.h>
+#include <BLEDevice.h>  // core 付属の BLE（外付けの NimBLE-Arduino 1.4 は今の core と噛み合わず、起動時に落ちる）
 #include <sys/time.h>
 
 // スマホ（Android の Chrome＝Web Bluetooth）から表示を選ぶ。BLE の口は下の UUID・ページは docs/index.html。
@@ -45,27 +45,29 @@ void applySpeed() {
   dy = (dy < 0 ? -1 : 1) * speed_y;
 }
 
-class Writes : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic *c) override {
-    std::string v = c->getValue();
-    String uuid = c->getUUID().toString().c_str();
-    if (uuid == MODE_UUID && v.size() >= 1 && (uint8_t)v[0] < MODE_COUNT) {
-      mode = (uint8_t)v[0];
-    } else if (uuid == TEXT_UUID) {
+BLECharacteristic *ch_mode, *ch_text, *ch_speed, *ch_time;
+
+class Writes : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *c) override {
+    const uint8_t *v = c->getData();
+    size_t len = c->getLength();
+    if (c == ch_mode && len >= 1 && v[0] < MODE_COUNT) {
+      mode = v[0];
+    } else if (c == ch_text) {
       portENTER_CRITICAL(&text_mux);
-      size_t n = min((size_t)96, v.size());
-      memcpy(pending_text, v.data(), n);
+      size_t n = min((size_t)96, len);
+      memcpy(pending_text, v, n);
       pending_text[n] = 0;
       text_pending = true;
       portEXIT_CRITICAL(&text_mux);
-    } else if (uuid == SPEED_UUID && v.size() >= 2) {
-      speed_x = constrain((uint8_t)v[0], 1, 6);
-      speed_y = constrain((uint8_t)v[1], 1, 6);
+    } else if (c == ch_speed && len >= 2) {
+      speed_x = constrain(v[0], 1, 6);
+      speed_y = constrain(v[1], 1, 6);
       applySpeed();
-    } else if (uuid == TIME_UUID && v.size() >= 8) {
+    } else if (c == ch_time && len >= 8) {
       int32_t t, tz;
-      memcpy(&t, v.data(), 4);
-      memcpy(&tz, v.data() + 4, 4);
+      memcpy(&t, v, 4);
+      memcpy(&tz, v + 4, 4);
       struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
       settimeofday(&tv, nullptr);
       tz_min = tz;
@@ -78,32 +80,35 @@ class Writes : public NimBLECharacteristicCallbacks {
   }
 };
 
-class Conn : public NimBLEServerCallbacks {
-  void onDisconnect(NimBLEServer *s) override { NimBLEDevice::startAdvertising(); }  // 切れたらまた見つけてもらう
+// つながっている間も名乗り続ける＝前のつながりが裏で残っていても、つなぎ直せる
+class Conn : public BLEServerCallbacks {
+  void onConnect(BLEServer *s) override { BLEDevice::startAdvertising(); }
+  void onDisconnect(BLEServer *s) override { BLEDevice::startAdvertising(); }
 };
 
 void setupBle() {
-  NimBLEDevice::init("tiepin");
-  NimBLEServer *srv = NimBLEDevice::createServer();
+  BLEDevice::init("tiepin");
+  BLEServer *srv = BLEDevice::createServer();
   srv->setCallbacks(new Conn());
-  NimBLEService *svc = srv->createService(SVC_UUID);
+  BLEService *svc = srv->createService(SVC_UUID);
   static Writes cb;
-  const uint32_t RW = NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE;
-  svc->createCharacteristic(MODE_UUID, RW)->setCallbacks(&cb);
-  svc->createCharacteristic(TEXT_UUID, RW)->setCallbacks(&cb);
-  svc->createCharacteristic(SPEED_UUID, RW)->setCallbacks(&cb);
-  svc->createCharacteristic(TIME_UUID, NIMBLE_PROPERTY::WRITE)->setCallbacks(&cb);
+  const uint32_t RW = BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE;
+  ch_mode  = svc->createCharacteristic(MODE_UUID, RW);
+  ch_text  = svc->createCharacteristic(TEXT_UUID, RW);
+  ch_speed = svc->createCharacteristic(SPEED_UUID, RW);
+  ch_time  = svc->createCharacteristic(TIME_UUID, BLECharacteristic::PROPERTY_WRITE);
+  for (BLECharacteristic *c : { ch_mode, ch_text, ch_speed, ch_time }) c->setCallbacks(&cb);
   // 今の値を読めるようにしておく（ページが開いた時に今の設定を表示する）
   uint8_t m = mode;
-  svc->getCharacteristic(MODE_UUID)->setValue(&m, 1);
-  svc->getCharacteristic(TEXT_UUID)->setValue(text.c_str());
+  ch_mode->setValue(&m, 1);
+  ch_text->setValue(text);
   uint8_t sp[2] = { (uint8_t)speed_x, (uint8_t)speed_y };
-  svc->getCharacteristic(SPEED_UUID)->setValue(sp, 2);
+  ch_speed->setValue(sp, 2);
   svc->start();
-  NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+  BLEAdvertising *adv = BLEDevice::getAdvertising();
   adv->addServiceUUID(SVC_UUID);
   adv->setScanResponse(true);
-  adv->start();
+  BLEDevice::startAdvertising();
 }
 
 void drawDvd() {
