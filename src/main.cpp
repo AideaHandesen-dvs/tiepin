@@ -54,6 +54,79 @@ void applySpeed() {
 
 BLECharacteristic *ch_mode, *ch_text, *ch_speed, *ch_time, *ch_logo, *ch_box;
 
+// ---- 文字に混ぜるアイコン
+// 記号（♥ など）を受けたら Open Iconic（16px）の絵で描く。絵文字キーボードの別の書き方（❤ など）も同じ絵に寄せる。
+// ページの ICONS と揃える。
+struct Icon { uint32_t cp; uint16_t glyph; };
+enum : uint16_t { DRAW_BOX = 1, DRAW_CIRCLE, DRAW_RADIO };  // Open Iconic に無いもの＝線で描く
+const Icon ICONS[] = {
+  { 0x2665, 183 }, { 0x2764, 183 }, { 0x2661, 183 },  // ♥ ❤ ♡
+  { 0x2605, 258 }, { 0x2B50, 258 }, { 0x2606, 258 },  // ★ ⭐ ☆
+  { 0x1F44D, 268 }, { 0x1F44E, 267 },                 // 👍 👎
+  { 0x2713, 115 }, { 0x2714, 115 }, { 0x2705, 120 },  // ✓ ✔ ✅
+  { 0x274C, 121 }, { 0x2716, 283 }, { 0x2611, 264 },  // ❌ ✖ ☑
+  { 0x2610, DRAW_BOX }, { 0x25CB, DRAW_CIRCLE }, { 0x25C9, DRAW_RADIO }, { 0x25CF, DRAW_RADIO },  // ☐ ○ ◉ ●
+  { 0x26A0, 280 }, { 0x2753, 240 }, { 0x2139, 188 },  // ⚠ ❓ ℹ
+  { 0x266A, 225 }, { 0x266B, 225 }, { 0x1F3B5, 225 }, // ♪ ♫ 🎵
+  { 0x1F3A7, 182 }, { 0x1F3A4, 220 }, { 0x1F514, 93 }, { 0x1F4E3, 105 }, { 0x1F4AC, 114 },  // 🎧 🎤 🔔 📣 💬
+  { 0x1F4F1, 230 }, { 0x260E, 230 }, { 0x1F4DE, 230 },  // 📱 ☎ 📞
+  { 0x2709, 156 }, { 0x1F4E7, 156 }, { 0x1F4F7, 108 }, { 0x1F4A1, 196 }, { 0x1F525, 168 },  // ✉ 📧 📷 💡 🔥
+  { 0x26A1, 96 }, { 0x2600, 259 }, { 0x2601, 124 }, { 0x2614, 241 }, { 0x2602, 241 }, { 0x1F319, 223 },  // ⚡ ☀ ☁ ☔ ☂ 🌙
+  { 0x1F3E0, 184 }, { 0x1F4CD, 209 }, { 0x1F4CC, 232 }, { 0x1F6A9, 169 },  // 🏠 📍 📌 🚩
+  { 0x1F511, 193 }, { 0x1F512, 202 }, { 0x1F50D, 207 },  // 🔑 🔒 🔍
+  { 0x1F552, 123 }, { 0x23F1, 269 }, { 0x1F4C5, 107 }, { 0x1F4BC, 100 }, { 0x1F4D6, 97 }, { 0x270F, 227 },  // 🕒 ⏱ 📅 💼 📖 ✏
+  { 0x1F464, 229 }, { 0x1F465, 228 }, { 0x1F3AF, 263 }, { 0x1F50B, 91 }, { 0x1F41B, 104 }, { 0x1F6D2, 113 },  // 👤 👥 🎯 🔋 🐛 🛒
+  { 0x221E, 187 }, { 0x1F310, 175 }, { 0x1F527, 282 }, { 0x1F5D1, 271 },  // ∞ 🌐 🔧 🗑
+};
+const int ICON_W = 17;  // 16px の絵＋1px の隙間
+
+uint16_t iconFor(uint32_t cp) {
+  for (const Icon &i : ICONS) if (i.cp == cp) return i.glyph;
+  return 0;
+}
+
+// UTF-8 を 1 字ずつ読む（壊れた並びは 1 バイト飛ばす）
+uint32_t nextCp(const char *&p) {
+  uint8_t c = *p++;
+  int n = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+  uint32_t cp = n == 3 ? c & 7 : n == 2 ? c & 15 : n == 1 ? c & 31 : c;
+  while (n-- && (*p & 0xC0) == 0x80) cp = (cp << 6) | (*p++ & 0x3F);
+  return cp;
+}
+bool isInvisible(uint32_t cp) { return cp == 0xFE0F || cp == 0xFE0E || cp == 0x200D; }  // 絵文字の後ろに付く見えない字
+
+// 文字とアイコンを混ぜて描く。draw=false なら幅だけ返す。文字のフォントは呼ぶ側が選んでおく。
+// y は文字のベースライン。アイコンは下端をベースラインの 2px 下に揃える（unifont の字の箱に合わせる）
+int drawRich(int x, int y, const String &s, bool draw = true) {
+  const uint8_t *font = u8g2.getU8g2()->font;
+  int x0 = x;
+  for (const char *p = s.c_str(); *p;) {
+    uint32_t cp = nextCp(p);
+    if (isInvisible(cp)) continue;
+    uint16_t g = iconFor(cp);
+    if (g == DRAW_BOX) {
+      if (draw) u8g2.drawFrame(x + 2, y - 11, 12, 12);
+      x += ICON_W;
+    } else if (g == DRAW_CIRCLE || g == DRAW_RADIO) {
+      if (draw) {
+        u8g2.drawCircle(x + 8, y - 5, 6);
+        if (g == DRAW_RADIO) u8g2.drawDisc(x + 8, y - 5, 3);
+      }
+      x += ICON_W;
+    } else if (g) {
+      if (draw) {
+        u8g2.setFont(u8g2_font_open_iconic_all_2x_t);
+        u8g2.drawGlyph(x, y + 2, g);
+        u8g2.setFont(font);
+      }
+      x += ICON_W;
+    } else if (cp <= 0xFFFF) {
+      x += draw ? u8g2.drawGlyph(x, y, cp) : u8g2_GetGlyphWidth(u8g2.getU8g2(), cp);
+    }
+  }
+  return x - x0;
+}
+
 bool isAscii(const String &s) {
   for (size_t i = 0; i < s.length(); i++) if ((uint8_t)s[i] >= 0x80) return false;
   return true;
@@ -68,7 +141,7 @@ void setLogoFont() {
 void applyBox() {
   setLogoFont();
   logo_h = isAscii(logo) ? 14 : 16;
-  logo_w = box_w ? box_w : u8g2.getUTF8Width(logo.c_str()) + 1;
+  logo_w = box_w ? box_w : drawRich(0, 0, logo, false) + 1;
   logo_w = constrain(logo_w, 8, 120);
   x = constrain(x, 1, 127 - logo_w);  // 箱が広がって壁にめり込んだら内へ戻す（めり込んだままだと毎コマ跳ね返る）
   uint8_t b[3] = { box_w, (uint8_t)logo_w, (uint8_t)logo_h };
@@ -182,10 +255,10 @@ void drawDvd() {
   if (is_inverse) {
       u8g2.drawBox(0, 0, 128, 64);
       u8g2.setDrawColor(0); // 反転時は黒で文字を書く
-      u8g2.drawUTF8(x, y, logo.c_str());
+      drawRich(x, y, logo);
       u8g2.setDrawColor(1); // 色を戻す
   } else {
-      u8g2.drawUTF8(x, y, logo.c_str());
+      drawRich(x, y, logo);
       u8g2.drawFrame(0, 0, 128, 64); // 通常時は枠を表示
   }
 }
@@ -193,11 +266,11 @@ void drawDvd() {
 void drawText() {
   // 日本語も出せるフォント（JIS 第1水準の一部）。無い字は空白になる
   u8g2.setFont(u8g2_font_unifont_t_japanese1);
-  int w = u8g2.getUTF8Width(text.c_str());
+  int w = drawRich(0, 0, text, false);
   if (w <= 128) {
-    u8g2.drawUTF8((128 - w) / 2, 40, text.c_str());  // 収まる時は真ん中に止める
+    drawRich((128 - w) / 2, 40, text);  // 収まる時は真ん中に止める
   } else {
-    u8g2.drawUTF8(text_x, 40, text.c_str());          // 収まらない時は右から左へ流す
+    drawRich(text_x, 40, text);         // 収まらない時は右から左へ流す
     text_x -= 2;
     if (text_x < -w) text_x = 128;
   }

@@ -62,6 +62,9 @@
   .num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
   label.check { display: flex; gap: 8px; align-items: center; font-size: 14px; margin: 4px 0; }
   label.check input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .icons { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 4px; margin-top: 8px; }
+  .icons button { min-height: 40px; padding: 0; background: #000; border-color: var(--line); display: grid; place-items: center; }
+  .icons canvas { width: 24px; height: 24px; image-rendering: pixelated; }
   fieldset { border: 0; padding: 0; margin: 0; }
   fieldset:disabled { opacity: .5; }
   footer { font-size: 12px; color: var(--sub); margin-top: 20px; }
@@ -98,7 +101,9 @@
         <button id="sendText">送る</button>
       </div>
       <p class="hint" id="bytes">0 / 96 バイト</p>
-      <p class="hint">日本語も出せる（ひらがな・カタカナ・よく使う漢字）。本体のフォントに無い字は空白になる。画面に収まらない長さなら右から左へ流れる。</p>
+      <p class="hint">日本語も出せる（ひらがな・カタカナ・よく使う漢字）。本体のフォントに無い字は出ない。画面に収まらない長さなら右から左へ流れる。</p>
+      <p class="hint">アイコンも混ぜられる。押すと、最後に触った入力欄（ここか「跳ねるもの」）に入る。キーボードの ♥ や 👍 もそのまま使える。</p>
+      <div class="icons" id="icons"></div>
     </section>
 
     <section class="card">
@@ -135,6 +140,8 @@ const TIME  = "7e1a0005-6a3d-4c1b-9e57-71e9e0c0de01"; // UNIX 秒（int32 LE）�
 const LOGO  = "7e1a0006-6a3d-4c1b-9e57-71e9e0c0de01"; // 跳ねる文字（UTF-8・最大 32 バイト）
 const BOX   = "7e1a0007-6a3d-4c1b-9e57-71e9e0c0de01"; // 書く：幅（8〜120・0＝文字に合わせる） 読む：設定・実際の幅・高さ
 const TEXT_MAX = 96, LOGO_MAX = 32;
+// 本体の Open Iconic と同じ点の絵（16×16・1 行 4 桁の 16 進・左の点が下位ビット）。空は本体が線で描くもの。src/main.cpp の ICONS と揃える
+const ICONS = [["♥","000000003c3c7e7effffffffffffffff7ffe3ffc1ff80ff007e003c001800000"],["★","0000000001800180018003c07ffe3ffc1ff80ff007e007e00e700c3008100000"],["👍","030003000380018001c001e03ff33ff33ff31ff31ff31ff30ff30ff300000000"],["👎","0ff30ff31ff31ff31ff33ff33ff33ff301e001c0018003800300030000000000"],["✓","00000000100038007c007e003f041f8e0fdf07fe03fc01f800f0006000000000"],["✅","07e01ff83ffc7ffe67fee3fff1fff8cffc0ffe1fff3f7ffe7ffe3ffc1ff807e0"],["❌","07e01ff83ffc7ffe73cef18ff81ffc3ffc3ff81ff18f73ce7ffe3ffc1ff807e0"],["✖","1004380e7c1f7e3e3f7c1ff80ff007e007f00ff81ffc3e7e7c3f781e300c0000"],["☑","07ff63ff700338031c030e6307e323c331833003300330033fff3fff00000000"],["⚠","00c001e001e001f003f003f0073807380f3c0f3c0ffe1ffe1f3e3f3f3fff3fff"],["❓","0fc01fe0387030303000300018001c000e000700030003000000000003000300"],["ℹ","06000f000f000600000001e003f0033003000380018001c000c00cc00fc00780"],["♪","fe00ffe0fff0fff0c0f0c030c030c030f830fc30fc3efc3ffc3f783f003f001e"],["🎧","03c00ff01c381818300c300c300c300cf00ff00ff00ff00ff00ff00f00000000"],["🎤","018003c003c003c033cc33cc33cc318c18181c380ff003c00180018007e00ff0"],["🔔","03c007e00ff00ff00ff00ff01ff81ff83ffc7ffeffffffff0000000003c00180"],["📣","30003200338033e033ff33ff33ff33ff33fc3398321830180030003000000000"],["💬","03ff03ff000f000fffcfffcfffcfffcfffc1ffc0ffc0ffc08000000000000000"],["📱","0ffc0ffc0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0ffc0f3c0f3c0ffc"],["✉","00000000ffffffff7ffe1ff887e1e187f81ffe7fffffffffffffffff00000000"],["📷","0f001f801f803fc0fffefffff0f3e073c63fcf3fcf3fc63fe07ff0ffffffffff"],["💡","030003c000f00c3c0f0c03c000f00c3c0f0c03c003f003f00000000001e001e0"],["🔥","001000300070007000f800fc04fc0cfe1c7f1c3f3e3f3f1f3f0e3f8e3fcc1fc8"],["⚡","00000080008000c000e000e00ff007f003f803fc01c001c000c0004000400000"],["☀","01800180300c300c03c007e00ff0cff3cff30ff007e003c0300c300c01800180"],["☁","0000000007801fe01fe03ff03ffc3ffe7ffffffffffffffffffe7ffc00000000"],["☔","07801fe01fe03ff03ffc3ffe7ffffffffe1ffc0fe0c040c00ccc0ccc0ccc0ccc"],["🌙","00100018001c001e001e003f003f007f00ff01ff4ffe7ffe3ffc1ff80ff00180"],["🏠","018003c007e01ff83ffc7ffe3ffc3ffc3ffc3ffc3c3c3c3c3c3c3c3c00000000"],["📍","03c00ff01c381818300c300c300c300c18181c380ff00ff007e003c001800000"],["📌","0ffc0ffc03f003f003f003f01ffe3fff00c000c000c000c000c000c000c00000"],["🚩","03f303f37ff37ff33ff31ff30ff31ff33f037f03000300030003000300030003"],["🔑","1e007f806780c3c0c3c0e7c0ffe07ff07ff81ff803fc03fe003f003f003f003f"],["🔒","03c007e00e700c300c300c303ffc3ffc3ffc3ffc3ffc3ffc3ffc3ffc00000000"],["🔍","03f007f80e1c180638073003300330033003180718063e1c7ff8fbf0f0006000"],["🕒","07e01ff83c3c700e6186e187c183c183c383c303e0076006700e3c3c1ff807e0"],["⏱","03f003f001f001f8081c04060207338331c330c33003380718060e1c07f803f0"],["📅","3fff3fff3fff3fff000000003fff3fff333333333fff3fff3f333f333fff3fff"],["💼","07e00ff00c300c30ffffffffffffffffffffffff00000000ffffffffffffffff"],["📖","30fe30ff30ff30ff30ff36ff3fff3fff3fff3fff3fff3fff000300033fff3ffe"],["✏","00001800380070006000018003c007e007f003f801fc00fe007f003f001f000f"],["👤","03c007e007e00ff00ff00ff00ff007e007e003c0300c7c3effffffffffffffff"],["👥","0c001e003e303c783cfc3cfc1cfc0cfc0078e030f800f387f3fff3ff03ff03ff"],["🎯","07e01ff83c3c700e63c6e7e7ce73cc33cc33ce73e7e763c6700e3c3c1ff807e0"],["🔋","000000003fff3fff3fff3fffffffffffffffffff3fff3fff3fff3fff00000000"],["🐛","01c001e003f003f033f33fff0ffc07f83f3f3f3f0f3c0f3c3f3f373b03300000"],["🛒","00000000003f003ffff07fe07fe07fe03fe03fc00000000030c030c000000000"],["∞","00000000000000003c3c7e7ee7e7c3c3c3c3e7e77e7e3c3c0000000000000000"],["🌐","07e01ff83e3c7e3e6c1eec0ffc07fc07fe03fe03f80f601e703e3c3c1ff807e0"],["🔧","06000780038003c003c083c0ffc07fc07fe01ff000f8007c003e001900090006"],["🗑","01e003f01ffe3fff000000000ccc0ccc0ccc0ccc0ccc0ccc0ccc0ccc0ffc0ffc"],["☐",""],["○",""],["◉",""]];
 
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -222,6 +229,39 @@ async function readBox() {
   }
   renderBox();
 }
+
+// ---- アイコンを選ぶ欄
+let lastInput = null;
+["text", "logo"].forEach((id) => $(id).addEventListener("focus", () => { lastInput = $(id); }));
+function drawIcon(cv, ch, hex) {
+  const g = cv.getContext("2d"), ink = getComputedStyle(document.documentElement).getPropertyValue("--oled-ink");
+  g.fillStyle = ink; g.strokeStyle = ink; g.lineWidth = 1;
+  if (hex) {
+    for (let y = 0; y < 16; y++) {
+      const v = parseInt(hex.substr(y * 4, 4), 16);
+      for (let x = 0; x < 16; x++) if (v >> x & 1) g.fillRect(x, y, 1, 1);
+    }
+  } else if (ch === "☐") g.strokeRect(2.5, 2.5, 11, 11);
+  else {
+    g.beginPath(); g.arc(8, 8, 6, 0, 7); g.stroke();
+    if (ch === "◉") { g.beginPath(); g.arc(8, 8, 3, 0, 7); g.fill(); }
+  }
+}
+ICONS.forEach(([ch, hex]) => {
+  const b = document.createElement("button");
+  b.type = "button"; b.title = ch; b.setAttribute("aria-label", ch);
+  const cv = document.createElement("canvas"); cv.width = 16; cv.height = 16;
+  drawIcon(cv, ch, hex); b.appendChild(cv);
+  b.addEventListener("pointerdown", (e) => e.preventDefault()); // 入力欄からフォーカスを奪わない
+  b.addEventListener("click", () => {
+    const el = lastInput || $("text");
+    const a = el.selectionStart ?? el.value.length, z = el.selectionEnd ?? a;
+    el.value = el.value.slice(0, a) + ch + el.value.slice(z);
+    el.focus(); el.setSelectionRange(a + ch.length, a + ch.length);
+    el.dispatchEvent(new Event("input"));
+  });
+  $("icons").appendChild(b);
+});
 
 function updateBytes() {
   const n = enc.encode($("text").value).length;
